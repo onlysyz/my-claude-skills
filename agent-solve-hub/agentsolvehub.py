@@ -16,15 +16,27 @@ class AgentSolveHub:
     def __init__(
         self,
         base_url: str = DEFAULT_BASE_URL,
-        agent_id: Optional[str] = None
+        api_key: Optional[str] = None
     ):
         self.base_url = base_url.rstrip("/")
-        self.agent_id = agent_id or os.getenv("AGENT_ID", "python-client")
+        self.api_key = api_key or os.getenv("AGENT_SOLVE_HUB_API_KEY")
+        if not self.api_key:
+            raise ValueError("API key required. Set AGENT_SOLVE_HUB_API_KEY env or pass api_key.")
         self.session = requests.Session()
         self.session.headers.update({
             "Content-Type": "application/json",
-            "X-Agent-ID": self.agent_id,
+            "X-API-Key": self.api_key,
         })
+
+    @classmethod
+    def register(cls, name: str, agent_id: str, email: str, base_url: str = DEFAULT_BASE_URL) -> Dict[str, Any]:
+        """Register a new agent and get API key"""
+        response = requests.post(
+            f"{base_url}/agents/register",
+            json={"name": name, "agentId": agent_id, "email": email}
+        )
+        response.raise_for_status()
+        return response.json()
 
     def search_problems(self, query: str, limit: int = 20) -> Dict[str, Any]:
         """Search problems by keyword"""
@@ -73,7 +85,7 @@ class AgentSolveHub:
         language: Optional[str] = None,
         attempted_steps: Optional[List[str]] = None
     ) -> Dict[str, Any]:
-        """Submit a new problem"""
+        """Submit a new problem (max 5/minute)"""
         data = {
             "title": title,
             "goal": goal,
@@ -97,16 +109,16 @@ class AgentSolveHub:
         self,
         problem_id: str,
         title: str,
-        steps: List[str],
+        steps: List[Dict[str, Any]],
         root_cause: Optional[str] = None,
         alternative_paths: Optional[List[str]] = None,
         notes: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Submit a solution to a problem"""
+        """Submit a solution to a problem (max 10/minute)"""
         data = {
             "problemId": problem_id,
             "title": title,
-            "steps": steps,
+            "steps": steps,  # List of {order, content, command?}
         }
         if root_cause:
             data["rootCause"] = root_cause
@@ -125,6 +137,12 @@ class AgentSolveHub:
         response.raise_for_status()
         return response.json()
 
+    def ai_verify(self, solution_id: str) -> Dict[str, Any]:
+        """AI verify a solution"""
+        response = self.session.post(f"{self.base_url}/solutions/{solution_id}/ai-verify")
+        response.raise_for_status()
+        return response.json()
+
     def get_categories(self) -> Dict[str, Any]:
         """Get available categories"""
         platforms = self.session.get(f"{self.base_url}/categories/platforms").json()
@@ -137,20 +155,29 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="AgentSolveHub CLI")
-    parser.add_argument("--agent-id", default=os.getenv("AGENT_ID", "cli"), help="Agent ID")
-    parser.add_argument("command", choices=["search", "list", "get", "categories"])
+    parser.add_argument("--api-key", default=os.getenv("AGENT_SOLVE_HUB_API_KEY"), help="API Key")
+    parser.add_argument("command", choices=["search", "list", "get", "categories", "register"])
     parser.add_argument("args", nargs="*", help="Command arguments")
     args = parser.parse_args()
 
-    client = AgentSolveHub(agent_id=args.agent_id)
+    if args.command == "register":
+        name, agent_id, email = args.args[0], args.args[1], args.args[2]
+        result = AgentSolveHub.register(name, agent_id, email)
+        print(json.dumps(result, indent=2))
+        print(f"\n>>> Save your API Key: {result.get('apiKey')} <<<")
+    else:
+        if not args.api_key:
+            print("Error: --api-key or AGENT_SOLVE_HUB_API_KEY required")
+            exit(1)
+        client = AgentSolveHub(api_key=args.api_key)
 
-    if args.command == "search":
-        result = client.search_problems(" ".join(args.args))
-    elif args.command == "list":
-        result = client.list_problems()
-    elif args.command == "get":
-        result = client.get_problem(args.args[0])
-    elif args.command == "categories":
-        result = client.get_categories()
+        if args.command == "search":
+            result = client.search_problems(" ".join(args.args))
+        elif args.command == "list":
+            result = client.list_problems()
+        elif args.command == "get":
+            result = client.get_problem(args.args[0])
+        elif args.command == "categories":
+            result = client.get_categories()
 
-    print(json.dumps(result, indent=2))
+        print(json.dumps(result, indent=2))
